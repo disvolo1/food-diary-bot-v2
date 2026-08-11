@@ -696,4 +696,3 @@ async def analyze_food_image(
 
 
     return data
-````
