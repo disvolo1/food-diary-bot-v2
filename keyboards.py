@@ -1,17 +1,9 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-def main_menu(protein_shakes: int = 0):
-    protein_shakes = min(protein_shakes, 2)
-
+def main_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🍽 Сегодня",
-                    callback_data="today"
-                )
-            ],
             [
                 InlineKeyboardButton(
                     text="📷 Добавить еду",
@@ -20,93 +12,14 @@ def main_menu(protein_shakes: int = 0):
             ],
             [
                 InlineKeyboardButton(
-                    text=f"🥤 Протеин — {protein_shakes}/2",
-                    callback_data="protein_shake"
+                    text="📊 Сегодня",
+                    callback_data="today"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="⚙️ Настройки",
                     callback_data="settings"
-                )
-            ]
-        ]
-    )
-
-
-def confirm_meal():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Добавить",
-                    callback_data="meal_confirm"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отмена",
-                    callback_data="meal_cancel"
-                )
-            ]
-        ]
-    )
-
-
-def amount_type_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⚖️ Ввести граммы",
-                    callback_data="amount_grams"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🥣 Одна порция",
-                    callback_data="amount_portion"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="❌ Отмена",
-                    callback_data="meal_cancel"
-                )
-            ]
-        ]
-    )
-
-
-def settings_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔥 Калории",
-                    callback_data="set_calories"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🥩 Белок",
-                    callback_data="set_protein"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🥑 Жиры",
-                    callback_data="set_fat"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🍞 Углеводы",
-                    callback_data="set_carbs"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="◀️ Назад",
-                    callback_data="back_main"
                 )
             ]
         ]
@@ -126,34 +39,83 @@ def cancel_keyboard():
     )
 
 
-def today_keyboard(protein_shakes: int = 0):
-    protein_shakes = min(protein_shakes, 2)
-
+def amount_type_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📷 Добавить еду",
-                    callback_data="add_food"
+                    text="⚖️ Граммы / мл",
+                    callback_data="amount_grams"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text=f"🥤 Протеин — {protein_shakes}/2",
-                    callback_data="protein_shake"
+                    text="🥣 Порции",
+                    callback_data="amount_portion"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🗑 Удалить последний",
-                    callback_data="delete_last"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="◀️ Назад",
-                    callback_data="back_main"
+                    text="❌ Отмена",
+                    callback_data="cancel_action"
                 )
             ]
         ]
     )
+
+
+def confirm_meal():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Добавить",
+                    callback_data="meal_confirm"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="meal_cancel"
+                )
+            ]
+        ]
+    )
+
+
+def today_keyboard(protein_shakes: int = 0):
+    protein_shakes = max(
+        0,
+        min(protein_shakes, 2)
+    )
+
+    if protein_shakes == 0:
+        protein_text = "🥤 Выпить протеин 0/2"
+    elif protein_shakes == 1:
+        protein_text = "🥤 Выпить протеин 1/2"
+    else:
+        protein_text = "🥤 Протеин 2/2"
+
+    buttons = []
+
+    if protein_shakes < 2:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=protein_text,
+                    callback_data="add_protein"
+                )
+            ]
+        )
+    else:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=protein_text,
+                    callback_data="add_protein"
+                )
+            ]
+        )
+
+    buttons.append(
+       
