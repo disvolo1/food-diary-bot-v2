@@ -3,10 +3,7 @@ import aiosqlite
 from datetime import datetime
 
 
-DB_PATH = os.getenv(
-    "DB_PATH",
-    "food_diary.db"
-)
+DB_PATH = os.getenv("DB_PATH", "food_diary.db")
 
 
 # ============================================================
@@ -32,8 +29,7 @@ async def init_db():
                 calories_goal REAL DEFAULT 0,
                 protein_goal REAL DEFAULT 0,
                 fat_goal REAL DEFAULT 0,
-                carbs_goal REAL DEFAULT 0,
-                protein_shakes INTEGER DEFAULT 0
+                carbs_goal REAL DEFAULT 0
             )
             """
         )
@@ -55,26 +51,18 @@ async def init_db():
             """
         )
 
-        # Проверяем наличие protein_shakes
-        cursor = await db.execute(
-            "PRAGMA table_info(users)"
-        )
-
-        columns = await cursor.fetchall()
-
-        column_names = [
-            column[1]
-            for column in columns
-        ]
-
-        if "protein_shakes" not in column_names:
-
-            await db.execute(
-                """
-                ALTER TABLE users
-                ADD COLUMN protein_shakes INTEGER DEFAULT 0
-                """
+        # Отдельная таблица для протеина.
+        # Благодаря дате счётчик автоматически новый каждый день.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protein_shakes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                shake_date TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
+            """
+        )
 
         await db.commit()
 
@@ -96,10 +84,9 @@ async def create_user(
                 calories_goal,
                 protein_goal,
                 fat_goal,
-                carbs_goal,
-                protein_shakes
+                carbs_goal
             )
-            VALUES (?, 0, 0, 0, 0, 0)
+            VALUES (?, 0, 0, 0, 0)
             """,
             (telegram_id,)
         )
@@ -165,22 +152,28 @@ async def update_user_goals(
 
 
 # ============================================================
-# PROTEIN
+# PROTEIN SHAKES
 # ============================================================
 
 async def get_today_protein_shakes(
     telegram_id: int
 ) -> int:
 
+    today = today_date()
+
     async with aiosqlite.connect(DB_PATH) as db:
 
         cursor = await db.execute(
             """
-            SELECT protein_shakes
-            FROM users
+            SELECT COUNT(*)
+            FROM protein_shakes
             WHERE telegram_id = ?
+            AND shake_date = ?
             """,
-            (telegram_id,)
+            (
+                telegram_id,
+                today
+            )
         )
 
         row = await cursor.fetchone()
@@ -188,48 +181,51 @@ async def get_today_protein_shakes(
         if not row:
             return 0
 
-        value = row[0] or 0
-
-        return max(
-            0,
-            min(int(value), 2)
-        )
+        return min(int(row[0] or 0), 2)
 
 
 async def add_protein_shake(
     telegram_id: int
 ) -> bool:
 
+    today = today_date()
+
     async with aiosqlite.connect(DB_PATH) as db:
 
         cursor = await db.execute(
             """
-            SELECT protein_shakes
-            FROM users
+            SELECT COUNT(*)
+            FROM protein_shakes
             WHERE telegram_id = ?
+            AND shake_date = ?
             """,
-            (telegram_id,)
+            (
+                telegram_id,
+                today
+            )
         )
 
         row = await cursor.fetchone()
 
-        if not row:
-            return False
+        current = int(row[0] or 0)
 
-        current = row[0] or 0
-
+        # Максимум 2 стакана в день
         if current >= 2:
             return False
 
         await db.execute(
             """
-            UPDATE users
-            SET protein_shakes = ?
-            WHERE telegram_id = ?
+            INSERT INTO protein_shakes (
+                telegram_id,
+                shake_date,
+                created_at
+            )
+            VALUES (?, ?, ?)
             """,
             (
-                current + 1,
-                telegram_id
+                telegram_id,
+                today,
+                datetime.now().isoformat()
             )
         )
 
@@ -318,6 +314,10 @@ async def get_today_meals(
         ]
 
 
+# ============================================================
+# TODAY TOTALS
+# ============================================================
+
 async def get_today_totals(
     telegram_id: int
 ):
@@ -350,13 +350,21 @@ async def get_today_totals(
         fat = float(row[2] or 0)
         carbs = float(row[3] or 0)
 
+        # ====================================================
+        # PROTEIN SHAKES
+        # ====================================================
+
         cursor = await db.execute(
             """
-            SELECT protein_shakes
-            FROM users
+            SELECT COUNT(*)
+            FROM protein_shakes
             WHERE telegram_id = ?
+            AND shake_date = ?
             """,
-            (telegram_id,)
+            (
+                telegram_id,
+                today
+            )
         )
 
         protein_row = await cursor.fetchone()
@@ -369,7 +377,7 @@ async def get_today_totals(
                 2
             )
 
-        # Каждый стакан = 50 г белка
+        # Один стакан = 50 г белка
         protein += protein_shakes * 50
 
         return {
