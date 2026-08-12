@@ -2,14 +2,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
 def main_menu(protein_shakes: int = 0):
-    """
-    Главное меню.
-
-    protein_shakes:
-        Сколько порций протеина уже выпито сегодня.
-        Максимум — 2.
-    """
-
     protein_shakes = min(protein_shakes, 2)
 
     return InlineKeyboardMarkup(
@@ -134,7 +126,9 @@ def cancel_keyboard():
     )
 
 
-def today_keyboard():
+def today_keyboard(protein_shakes: int = 0):
+    protein_shakes = min(protein_shakes, 2)
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -145,7 +139,7 @@ def today_keyboard():
             ],
             [
                 InlineKeyboardButton(
-                    text="🥤 Добавить протеин",
+                    text=f"🥤 Протеин — {protein_shakes}/2",
                     callback_data="protein_shake"
                 )
             ],
@@ -163,6 +157,3 @@ def today_keyboard():
             ]
         ]
     )
-
-
-def today_keyboard_with_protein(protein_sh
