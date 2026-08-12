@@ -84,6 +84,15 @@ def confirm_meal():
 
 
 def today_keyboard(protein_shakes: int = 0):
+    """
+    Клавиатура экрана 'Сегодня'.
+
+    protein_shakes:
+    0 = протеин не выпит
+    1 = выпит один стакан
+    2 = выпиты оба стакана
+    """
+
     protein_shakes = max(
         0,
         min(protein_shakes, 2)
@@ -98,24 +107,81 @@ def today_keyboard(protein_shakes: int = 0):
 
     buttons = []
 
-    if protein_shakes < 2:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=protein_text,
-                    callback_data="add_protein"
-                )
-            ]
-        )
-    else:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=protein_text,
-                    callback_data="add_protein"
-                )
-            ]
-        )
+    # Кнопка протеина всегда отображается.
+    # После 2 стаканов она становится просто неактивной.
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text=protein_text,
+                callback_data="add_protein"
+            )
+        ]
+    )
 
     buttons.append(
-       
+        [
+            InlineKeyboardButton(
+                text="↩️ Удалить последний приём",
+                callback_data="delete_last"
+            )
+        ]
+    )
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="🔄 Обновить",
+                callback_data="today"
+            )
+        ]
+    )
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Главное меню",
+                callback_data="back_main"
+            )
+        ]
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=buttons
+    )
+
+
+def settings_menu():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔥 Изменить калории",
+                    callback_data="set_calories"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🥩 Изменить белок",
+                    callback_data="set_protein"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🥑 Изменить жиры",
+                    callback_data="set_fat"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🍞 Изменить углеводы",
+                    callback_data="set_carbs"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="back_main"
+                )
+            ]
+        ]
+    )
