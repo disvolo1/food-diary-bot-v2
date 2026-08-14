@@ -1,3 +1,4 @@
+```python
 import asyncio
 import logging
 import os
@@ -46,9 +47,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN is not set"
-    )
+    raise RuntimeError("BOT_TOKEN is not set")
 
 
 logging.basicConfig(
@@ -117,11 +116,7 @@ def format_number(value):
     return f"{value:.1f}"
 
 
-def progress_bar(
-    current,
-    goal,
-    length=10
-):
+def progress_bar(current, goal, length=10):
 
     if not goal or goal <= 0:
         return "░" * length
@@ -141,10 +136,7 @@ def progress_bar(
     )
 
 
-def build_today_text(
-    user,
-    totals
-):
+def build_today_text(user, totals):
 
     calories_goal = user["calories_goal"] or 0
     protein_goal = user["protein_goal"] or 0
@@ -206,16 +198,77 @@ def build_today_text(
     )
 
 
-async def show_main_menu(
-    message: Message
-):
+async def show_main_menu(message: Message):
 
     await message.answer(
         "🍽 <b>Дневник питания</b>\n\n"
-        "Отправь фотографию этикетки, "
-        "и я распознаю КБЖУ.",
+        "Отправь фото еды или этикетки — "
+        "я сам определю, что на фотографии.",
         reply_markup=main_menu()
     )
+
+
+def build_dish_text(result):
+
+    name = result.get("name") or "Блюдо"
+
+    items = result.get("items") or []
+
+    total = result.get("total") or {}
+
+    calories = total.get("calories", 0)
+    protein = total.get("protein", 0)
+    fat = total.get("fat", 0)
+    carbs = total.get("carbs", 0)
+
+    confidence = result.get("confidence", 0)
+
+    text = (
+        f"🍽 <b>{name}</b>\n\n"
+    )
+
+    if items:
+
+        text += "<b>Я вижу:</b>\n"
+
+        for item in items:
+
+            item_name = item.get(
+                "name",
+                "Продукт"
+            )
+
+            grams = item.get(
+                "estimated_grams",
+                0
+            )
+
+            text += (
+                f"• {item_name} — "
+                f"~{format_number(grams)} г\n"
+            )
+
+        text += "\n"
+
+    text += (
+        "<b>Примерный итог:</b>\n\n"
+
+        f"🔥 {format_number(calories)} ккал\n"
+        f"🥩 {format_number(protein)} г белка\n"
+        f"🥑 {format_number(fat)} г жиров\n"
+        f"🍞 {format_number(carbs)} г углеводов\n\n"
+
+        "⚠️ <i>Вес и КБЖУ блюда являются "
+        "приблизительной оценкой по фотографии.</i>"
+    )
+
+    if confidence:
+        text += (
+            f"\n\n🔎 Уверенность анализа: "
+            f"{round(float(confidence) * 100)}%"
+        )
+
+    return text
 
 
 # ============================================================
@@ -449,8 +502,8 @@ async def setup_carbs(
         f"🥑 {format_number(data['fat'])} г жиров\n"
         f"🍞 {format_number(carbs)} г углеводов\n\n"
 
-        "Теперь просто отправляй мне "
-        "фотографии этикеток 📷",
+        "Теперь отправляй мне фото еды или "
+        "этикетки 📷",
         reply_markup=main_menu()
     )
 
@@ -474,27 +527,26 @@ async def add_food_callback(
     )
 
     await callback.message.edit_text(
-        "📷 <b>Отправь фотографию этикетки</b>\n\n"
-        "Я прочитаю калории, белки, жиры и углеводы.",
+        "📷 <b>Отправь фотографию еды</b>\n\n"
+        "Это может быть тарелка, продукт "
+        "или этикетка.\n\n"
+        "Я сам определю тип фотографии.",
         reply_markup=cancel_keyboard()
     )
 
 
 # ============================================================
-# PHOTO
+# PHOTO ANALYSIS
 # ============================================================
 
-@dp.message(
-    MealStates.waiting_photo,
-    F.photo
-)
-async def receive_food_photo(
+async def process_food_photo(
     message: Message,
     state: FSMContext
 ):
 
     processing_message = await message.answer(
-        "🔎 <b>Читаю этикетку...</b>"
+        "🔎 <b>Анализирую фотографию...</b>\n\n"
+        "Это может занять несколько секунд."
     )
 
     try:
@@ -529,14 +581,12 @@ async def receive_food_photo(
         )
 
         try:
-
             await processing_message.edit_text(
-                "❌ <b>Не получилось прочитать этикетку.</b>\n\n"
-                "Попробуй сфотографировать таблицу КБЖУ "
-                "ближе, целиком и при хорошем освещении.",
+                "❌ <b>Не получилось проанализировать фото.</b>\n\n"
+                "Попробуй сделать фотографию ещё раз "
+                "при хорошем освещении.",
                 reply_markup=main_menu()
             )
-
         except Exception:
             pass
 
@@ -551,103 +601,315 @@ async def receive_food_photo(
 
     telegram_id = message.from_user.id
 
-    name = result.get(
-        "name"
-    ) or "Неизвестный продукт"
+    result_type = result.get(
+        "type",
+        "unknown"
+    )
 
-    calories = result.get("calories")
-    protein = result.get("protein")
-    fat = result.get("fat")
-    carbs = result.get("carbs")
-    basis = result.get("basis")
+    # ========================================================
+    # UNKNOWN
+    # ========================================================
 
-    if any(
-        value is None
-        for value in [
-            calories,
-            protein,
-            fat,
-            carbs
-        ]
-    ):
+    if result_type == "unknown":
+
+        await state.clear()
 
         await message.answer(
-            "⚠️ <b>Я увидел этикетку, "
-            "но не смог уверенно прочитать все КБЖУ.</b>\n\n"
+            "🤔 <b>Я не смог понять, что находится "
+            "на фотографии.</b>\n\n"
             "Попробуй:\n"
-            "• сфотографировать таблицу ближе\n"
-            "• убрать блики\n"
-            "• сделать фото прямо перед упаковкой\n"
-            "• чтобы вся таблица была в кадре",
+            "• сфотографировать еду целиком\n"
+            "• сделать фото при хорошем освещении\n"
+            "• приблизить этикетку\n"
+            "• убрать блики с упаковки",
             reply_markup=main_menu()
+        )
+
+        return
+
+    # ========================================================
+    # DISH
+    # ========================================================
+
+    if result_type == "dish":
+
+        total = result.get(
+            "total",
+            {}
+        )
+
+        calories = total.get(
+            "calories",
+            0
+        )
+
+        protein = total.get(
+            "protein",
+            0
+        )
+
+        fat = total.get(
+            "fat",
+            0
+        )
+
+        carbs = total.get(
+            "carbs",
+            0
+        )
+
+        if (
+            calories is None
+            or protein is None
+            or fat is None
+            or carbs is None
+        ):
+
+            await state.clear()
+
+            await message.answer(
+                "⚠️ <b>Не удалось нормально оценить "
+                "КБЖУ блюда.</b>\n\n"
+                "Попробуй сделать фото ближе.",
+                reply_markup=main_menu()
+            )
+
+            return
+
+        pending_meals[telegram_id] = {
+
+            "type": "dish",
+
+            "calculated": {
+
+                "name": result.get(
+                    "name"
+                ) or "Блюдо",
+
+                "calories": float(
+                    calories
+                ),
+
+                "protein": float(
+                    protein
+                ),
+
+                "fat": float(
+                    fat
+                ),
+
+                "carbs": float(
+                    carbs
+                ),
+
+                "amount": sum(
+                    float(
+                        item.get(
+                            "estimated_grams",
+                            0
+                        ) or 0
+                    )
+                    for item in (
+                        result.get("items")
+                        or []
+                    )
+                ),
+
+                "unit": "г"
+            }
+        }
+
+        text = build_dish_text(
+            result
         )
 
         await state.clear()
 
+        await message.answer(
+            text,
+            reply_markup=confirm_meal()
+        )
+
         return
 
-    pending_meals[telegram_id] = {
-        "data": {
-            "name": name,
-            "calories": float(calories),
-            "protein": float(protein),
-            "fat": float(fat),
-            "carbs": float(carbs),
-            "basis": basis
+    # ========================================================
+    # LABEL
+    # ========================================================
+
+    if result_type == "label":
+
+        name = result.get(
+            "name"
+        ) or "Неизвестный продукт"
+
+        calories = result.get(
+            "calories"
+        )
+
+        protein = result.get(
+            "protein"
+        )
+
+        fat = result.get(
+            "fat"
+        )
+
+        carbs = result.get(
+            "carbs"
+        )
+
+        basis = result.get(
+            "basis",
+            "unknown"
+        )
+
+        if any(
+            value is None
+            for value in [
+                calories,
+                protein,
+                fat,
+                carbs
+            ]
+        ):
+
+            await state.clear()
+
+            await message.answer(
+                "⚠️ <b>Я увидел этикетку, "
+                "но не смог уверенно прочитать "
+                "все КБЖУ.</b>\n\n"
+                "Попробуй:\n"
+                "• сфотографировать таблицу ближе\n"
+                "• убрать блики\n"
+                "• сделать фото прямо перед упаковкой\n"
+                "• чтобы вся таблица была в кадре",
+                reply_markup=main_menu()
+            )
+
+            return
+
+        pending_meals[telegram_id] = {
+
+            "type": "label",
+
+            "data": {
+
+                "name": name,
+
+                "calories": float(
+                    calories
+                ),
+
+                "protein": float(
+                    protein
+                ),
+
+                "fat": float(
+                    fat
+                ),
+
+                "carbs": float(
+                    carbs
+                ),
+
+                "basis": basis
+            }
         }
-    }
 
-    text = (
-        f"📦 <b>{name}</b>\n\n"
+        text = (
+            f"📦 <b>{name}</b>\n\n"
 
-        f"🔥 {format_number(calories)} ккал\n"
-        f"🥩 {format_number(protein)} г белка\n"
-        f"🥑 {format_number(fat)} г жиров\n"
-        f"🍞 {format_number(carbs)} г углеводов\n\n"
+            f"🔥 {format_number(calories)} ккал\n"
+            f"🥩 {format_number(protein)} г белка\n"
+            f"🥑 {format_number(fat)} г жиров\n"
+            f"🍞 {format_number(carbs)} г углеводов\n\n"
+        )
+
+        if basis == "100g":
+
+            text += (
+                "📏 Значения указаны на <b>100 г</b>.\n\n"
+                "Сколько ты съел?"
+            )
+
+        elif basis == "100ml":
+
+            text += (
+                "📏 Значения указаны на <b>100 мл</b>.\n\n"
+                "Сколько ты выпил?"
+            )
+
+        elif basis == "portion":
+
+            text += (
+                "📏 Значения указаны за <b>порцию</b>.\n\n"
+                "Сколько порций?"
+            )
+
+        elif basis == "package":
+
+            text += (
+                "📦 Значения указаны за <b>упаковку</b>.\n\n"
+                "Сколько упаковок?"
+            )
+
+        else:
+
+            text += (
+                "📏 Не удалось определить основу "
+                "значений.\n\n"
+                "Выбери способ ввода."
+            )
+
+        await state.set_state(
+            MealStates.waiting_amount
+        )
+
+        await message.answer(
+            text,
+            reply_markup=amount_type_keyboard()
+        )
+
+        return
+
+
+# ============================================================
+# PHOTO WITH ACTIVE STATE
+# ============================================================
+
+@dp.message(
+    MealStates.waiting_photo,
+    F.photo
+)
+async def receive_food_photo(
+    message: Message,
+    state: FSMContext
+):
+
+    await process_food_photo(
+        message,
+        state
     )
 
-    if basis == "100g":
 
-        text += (
-            "📏 Значения указаны на <b>100 г</b>.\n\n"
-            "Сколько ты съел?"
-        )
+# ============================================================
+# PHOTO WITHOUT ACTIVE STATE
+# ============================================================
 
-    elif basis == "100ml":
-
-        text += (
-            "📏 Значения указаны на <b>100 мл</b>.\n\n"
-            "Сколько мл ты выпил?"
-        )
-
-    elif basis == "portion":
-
-        text += (
-            "📏 Значения указаны за <b>порцию</b>.\n\n"
-            "Сколько порций ты съел?"
-        )
-
-    elif basis == "package":
-
-        text += (
-            "📦 Значения указаны за <b>упаковку</b>.\n\n"
-            "Сколько упаковок ты съел?"
-        )
-
-    else:
-
-        text += (
-            "📏 Не удалось определить основу.\n\n"
-            "Выбери способ ввода:"
-        )
+@dp.message(F.photo)
+async def photo_without_state(
+    message: Message,
+    state: FSMContext
+):
 
     await state.set_state(
-        MealStates.waiting_amount
+        MealStates.waiting_photo
     )
 
-    await message.answer(
-        text,
-        reply_markup=amount_type_keyboard()
+    await process_food_photo(
+        message,
+        state
     )
 
 
@@ -753,9 +1015,20 @@ async def receive_amount(
 
         return
 
-    meal = pending_meals[
+    pending = pending_meals[
         telegram_id
-    ]["data"]
+    ]
+
+    if pending.get("type") != "label":
+
+        await message.answer(
+            "❌ Для этого блюда количество "
+            "уже определено автоматически."
+        )
+
+        return
+
+    meal = pending["data"]
 
     state_data = await state.get_data()
 
@@ -865,8 +1138,6 @@ async def receive_amount(
 
         "amount": amount,
 
-        "amount_type": amount_type,
-
         "unit": unit
     }
 
@@ -954,18 +1225,19 @@ async def meal_confirm(
         telegram_id
     )
 
+    protein_shakes = await get_today_protein_shakes(
+        telegram_id
+    )
+
     text = build_today_text(
         user,
         totals
     )
 
-    protein_shakes = await get_today_protein_shakes(
-        telegram_id
-    )
-
     text += (
         "\n\n"
-        f"🥤 <b>Протеин: {protein_shakes}/2</b>"
+        f"🥤 <b>Протеин: "
+        f"{protein_shakes}/2</b>"
     )
 
     await callback.message.edit_text(
@@ -1131,8 +1403,7 @@ async def add_protein_callback(
     new_count = current + 1
 
     await callback.answer(
-        "🥤 +50 г белка!",
-        show_alert=False
+        "🥤 +50 г белка!"
     )
 
     user = await get_user(
@@ -1573,26 +1844,6 @@ async def cancel_action(
 
 
 # ============================================================
-# PHOTO WITHOUT ACTIVE STATE
-# ============================================================
-
-@dp.message(F.photo)
-async def photo_without_state(
-    message: Message,
-    state: FSMContext
-):
-
-    await state.set_state(
-        MealStates.waiting_photo
-    )
-
-    await receive_food_photo(
-        message,
-        state
-    )
-
-
-# ============================================================
 # UNKNOWN TEXT
 # ============================================================
 
@@ -1602,7 +1853,7 @@ async def unknown_text(
 ):
 
     await message.answer(
-        "📷 Отправь фотографию этикетки\n"
+        "📷 Отправь фотографию еды или этикетки "
         "или используй меню ниже.",
         reply_markup=main_menu()
     )
@@ -1630,3 +1881,4 @@ if __name__ == "__main__":
     asyncio.run(
         main()
     )
+```
