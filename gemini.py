@@ -1,6 +1,6 @@
-
-import json
 import os
+import json
+import logging
 import re
 
 from google import genai
@@ -8,7 +8,7 @@ from google.genai import types
 
 
 # ============================================================
-# GEMINI CONFIG
+# CONFIG
 # ============================================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -17,9 +17,10 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY is not set")
 
 
-# Актуальная модель для анализа текста + изображений
-MODEL_NAME = "gemini-3.1-flash-lite"
-
+MODEL_NAME = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-3.1-flash-lite"
+)
 
 client = genai.Client(
     api_key=GEMINI_API_KEY
@@ -27,355 +28,220 @@ client = genai.Client(
 
 
 # ============================================================
+# LOGGING
+# ============================================================
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
 # PROMPT
 # ============================================================
 
-PROMPT = """
-Ты — система распознавания пищевой ценности продуктов.
+FOOD_ANALYSIS_PROMPT = """
+Ты — точный помощник по анализу питания.
 
-Пользователь отправил фотографию продукта питания.
+Твоя задача — проанализировать фотографию еды.
 
-На фотографии может находиться:
-- упаковка;
-- этикетка;
-- таблица пищевой ценности;
-- несколько таблиц;
-- текст на русском, английском или немецком языке.
+На фотографии может быть:
 
-Твоя задача — внимательно изучить ВСЮ фотографию
-и найти пищевую ценность продукта.
+1. Этикетка продукта.
+2. Готовое блюдо или тарелка с едой.
+3. Несколько разных продуктов.
+4. Фото еды без упаковки и без таблицы КБЖУ.
 
+Нужно определить тип фотографии и вернуть JSON.
 
-============================================================
-ЧТО НУЖНО НАЙТИ
-============================================================
+ВАЖНЫЕ ПРАВИЛА:
 
-Найди:
+- Никогда не придумывай значения с этикетки, если они хорошо видны.
+- Если на фото готовая еда, оцени состав блюда и размер порций.
+- Для готовой еды обязательно используй приблизительную оценку веса каждого продукта.
+- Не выдавай оценку готового блюда как точное лабораторное значение.
+- Если невозможно определить вес точно, используй разумную приблизительную оценку.
+- Не добавляй продукты, которых визуально нет на фотографии.
+- Если продукт невозможно уверенно определить, используй наиболее вероятный вариант и снизь confidence.
+- Калории и КБЖУ должны соответствовать указанному количеству продукта.
+- Все числа должны быть числовыми значениями, без единиц измерения.
+- Не используй markdown.
+- Ответ должен быть ТОЛЬКО валидным JSON.
 
-1. Название продукта
-2. Калории
-3. Белки
-4. Жиры
-5. Углеводы
-6. Основу, на которую указаны значения
+--------------------------------------------------
+ТИПЫ ФОТО
+--------------------------------------------------
 
+Если это упаковка или этикетка:
 
-============================================================
-ЯЗЫКИ
-============================================================
+"type": "label"
 
-Русский:
+Если это готовая еда:
 
-Энергетическая ценность
-ккал
-кДж
-Белки
-Жиры
-Углеводы
+"type": "dish"
 
-Английский:
+Если невозможно определить:
 
-Energy
-kcal
-kJ
-Protein
-Fat
-Carbohydrate
-Carbs
+"type": "unknown"
 
-Немецкий:
+--------------------------------------------------
+ЕСЛИ ЭТО LABEL
+--------------------------------------------------
 
-Energie
-Eiweiß
-Fett
-Kohlenhydrate
+Определи:
 
+- название продукта
+- калории
+- белки
+- жиры
+- углеводы
+- основу значений
 
-============================================================
-КАЛОРИИ
-============================================================
+basis может быть:
 
-Если написано:
+"100g"
+"100ml"
+"portion"
+"package"
+"unknown"
 
-Energy 850 kJ / 200 kcal
+Если на этикетке указано несколько вариантов, используй значения, которые наиболее явно относятся к продукту.
 
-используй:
+--------------------------------------------------
+ЕСЛИ ЭТО DISH
+--------------------------------------------------
 
-200
-
-То есть:
-
-calories = 200
-
-Если указаны только kJ,
-не преобразовывай их самостоятельно,
-если рядом нет kcal.
-
-
-============================================================
-БЕЛКИ
-============================================================
-
-Используй:
-
-Protein
-Белки
-Eiweiß
-
-Не используй другие показатели.
-
-
-============================================================
-ЖИРЫ
-============================================================
-
-Используй общий показатель:
-
-Fat
-Жиры
-Fett
+Раздели блюдо на отдельные продукты.
 
 Например:
 
-Fat 10 g
-of which saturates 2 g
+Фото тарелки с курицей, рисом и овощами:
 
-результат:
+items:
 
-fat = 10
+- Куриная грудка
+- Рис
+- Овощи
 
-НЕ используй насыщенные жиры.
+Для каждого продукта определи:
 
+- name
+- estimated_grams
+- calories
+- protein
+- fat
+- carbs
+- confidence
 
-============================================================
-УГЛЕВОДЫ
-============================================================
+confidence должен быть числом от 0 до 1.
 
-Используй общий показатель:
+После этого посчитай TOTAL.
 
-Carbohydrate
-Carbs
-Углеводы
-Kohlenhydrate
+--------------------------------------------------
+ВАЖНО ПРО ВЕС
+--------------------------------------------------
 
-Например:
+По фотографии невозможно точно узнать вес еды.
 
-Carbohydrate 20 g
-of which sugars 5 g
+Поэтому:
 
-результат:
+- используй "~" только в человеческом описании, но НЕ в JSON;
+- в JSON используй обычное число;
+- estimated_grams — это приблизительная оценка;
+- учитывай размер тарелки и визуальный объём еды;
+- если есть стандартный предмет для масштаба, например вилка, стакан или упаковка, используй его.
 
-carbs = 20
-
-НЕ используй сахара.
-
-
-============================================================
-ОСНОВА ЗНАЧЕНИЙ
-============================================================
-
-Если таблица написана:
-
-per 100 g
-
-используй:
-
-basis = "100g"
-
-
-Если:
-
-per 100 ml
-
-используй:
-
-basis = "100ml"
-
-
-Если:
-
-per serving
-
-используй:
-
-basis = "portion"
-
-
-Если:
-
-per package
-
-используй:
-
-basis = "package"
-
-
-Если основу невозможно определить:
-
-basis = null
-
-
-============================================================
-ПРИОРИТЕТ
-============================================================
-
-Если на фотографии есть одновременно:
-
-per 100 g
-
-и
-
-per serving
-
-используй значения:
-
-per 100 g
-
-
-Если это напиток и таблица указана:
-
-per 100 ml
-
-используй:
-
-100ml
-
-
-============================================================
-ТОЧНОСТЬ
-============================================================
-
-НЕ ПРИДУМЫВАЙ значения.
-
-Если число невозможно уверенно прочитать,
-используй null.
-
-Особенно внимательно различай:
-
-0 / 8
-1 / 7
-3 / 8
-5 / 6
-
-Сохраняй десятичные значения.
-
-Например:
-
-12,5 g
-
-должно стать:
-
-12.5
-
-
-============================================================
-ФОТОГРАФИЯ
-============================================================
-
-Фотография может быть:
-
-- наклонена;
-- сделана под углом;
-- немного размыта;
-- с бликами;
-- с помятой упаковкой;
-- с маленьким текстом;
-- с таблицей сбоку;
-- с таблицей в вертикальном положении.
-
-Всё равно попытайся распознать информацию.
-
-Изучи всю фотографию,
-а не только центральную область.
-
-
-============================================================
-НАЗВАНИЕ ПРОДУКТА
-============================================================
-
-Попробуй найти название продукта
-на упаковке.
-
-Если название невозможно определить:
-
-name = "Неизвестный продукт"
-
-
-============================================================
-ЕСЛИ ДАННЫЕ НЕ НАЙДЕНЫ
-============================================================
-
-Если фотография не содержит читаемой таблицы
-пищевой ценности:
-
-calories = null
-protein = null
-fat = null
-carbs = null
-basis = null
-
-
-============================================================
-ФОРМАТ ОТВЕТА
-============================================================
-
-Верни ТОЛЬКО JSON.
-
-Формат:
+--------------------------------------------------
+ФОРМАТ LABEL
+--------------------------------------------------
 
 {
+  "type": "label",
   "name": "Название продукта",
-  "calories": 200,
-  "protein": 15,
-  "fat": 10,
-  "carbs": 20,
-  "basis": "100g"
+  "calories": 515,
+  "protein": 6.7,
+  "fat": 29,
+  "carbs": 55,
+  "basis": "100g",
+  "confidence": 0.98
 }
 
-Числа должны быть числами,
-а не строками.
+--------------------------------------------------
+ФОРМАТ DISH
+--------------------------------------------------
 
-Например правильно:
+{
+  "type": "dish",
+  "name": "Курица с рисом и овощами",
+  "items": [
+    {
+      "name": "Куриная грудка",
+      "estimated_grams": 180,
+      "calories": 297,
+      "protein": 56,
+      "fat": 6,
+      "carbs": 0,
+      "confidence": 0.88
+    },
+    {
+      "name": "Рис",
+      "estimated_grams": 150,
+      "calories": 195,
+      "protein": 4,
+      "fat": 0.5,
+      "carbs": 42,
+      "confidence": 0.82
+    }
+  ],
+  "total": {
+    "calories": 492,
+    "protein": 60,
+    "fat": 6.5,
+    "carbs": 42
+  },
+  "confidence": 0.85
+}
 
-"calories": 200
+--------------------------------------------------
+ЕСЛИ UNKNOWN
+--------------------------------------------------
 
-Неправильно:
+{
+  "type": "unknown",
+  "name": null,
+  "calories": null,
+  "protein": null,
+  "fat": null,
+  "carbs": null,
+  "basis": "unknown",
+  "confidence": 0
+}
 
-"calories": "200"
+--------------------------------------------------
+ГЛАВНОЕ
+--------------------------------------------------
 
+Для готовой еды результат является ОЦЕНКОЙ.
 
-Если значение неизвестно:
+Для этикетки, если значения хорошо видны, используй значения с этикетки.
 
-"calories": null
-
-
-НЕ добавляй:
-- markdown;
-- ```json;
-- комментарии;
-- объяснения;
-- дополнительный текст.
-
-ТОЛЬКО JSON.
+Не добавляй никаких пояснений вне JSON.
 """
 
 
 # ============================================================
-# JSON EXTRACTION
+# JSON CLEANER
 # ============================================================
 
-def extract_json(text: str):
+def clean_json_response(text: str) -> str:
+    """
+    Удаляет markdown-обёртку, если Gemini случайно её добавил.
+    """
 
     if not text:
-        raise ValueError(
-            "Gemini returned an empty response"
-        )
+        return ""
 
     text = text.strip()
 
-    # Удаляем markdown-обертку,
-    # если модель случайно её добавила.
-
+    # ```json ... ```
     text = re.sub(
         r"^```json\s*",
         "",
@@ -383,6 +249,7 @@ def extract_json(text: str):
         flags=re.IGNORECASE
     )
 
+    # ``` ... ```
     text = re.sub(
         r"^```\s*",
         "",
@@ -395,304 +262,361 @@ def extract_json(text: str):
         text
     )
 
-    text = text.strip()
-
-
-    # Сначала пробуем распарсить
-    # весь ответ как JSON.
-
-    try:
-
-        return json.loads(text)
-
-    except json.JSONDecodeError:
-
-        pass
-
-
-    # Если модель добавила какой-либо текст
-    # вокруг JSON, пытаемся найти объект.
-
-    match = re.search(
-        r"\{.*\}",
-        text,
-        re.DOTALL
-    )
-
-    if not match:
-
-        raise ValueError(
-            "Gemini did not return valid JSON: "
-            + text
-        )
-
-
-    json_text = match.group(0)
-
-
-    try:
-
-        return json.loads(
-            json_text
-        )
-
-    except json.JSONDecodeError as error:
-
-        raise ValueError(
-            "Invalid JSON returned by Gemini: "
-            + json_text
-        ) from error
+    return text.strip()
 
 
 # ============================================================
-# ANALYZE FOOD IMAGE
+# VALIDATE NUMBER
+# ============================================================
+
+def number_or_none(value):
+    if value is None:
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# ============================================================
+# NORMALIZE RESULT
+# ============================================================
+
+def normalize_result(data: dict) -> dict:
+    """
+    Приводит ответ Gemini к безопасному формату.
+    """
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            "Gemini returned non-dict JSON"
+        )
+
+    result_type = data.get(
+        "type",
+        "unknown"
+    )
+
+    if result_type not in (
+        "label",
+        "dish",
+        "unknown"
+    ):
+        result_type = "unknown"
+
+    # --------------------------------------------------------
+    # UNKNOWN
+    # --------------------------------------------------------
+
+    if result_type == "unknown":
+
+        return {
+            "type": "unknown",
+            "name": None,
+            "calories": None,
+            "protein": None,
+            "fat": None,
+            "carbs": None,
+            "basis": "unknown",
+            "confidence": 0.0,
+            "items": [],
+            "total": {
+                "calories": 0.0,
+                "protein": 0.0,
+                "fat": 0.0,
+                "carbs": 0.0
+            }
+        }
+
+    # --------------------------------------------------------
+    # LABEL
+    # --------------------------------------------------------
+
+    if result_type == "label":
+
+        return {
+            "type": "label",
+
+            "name": (
+                data.get("name")
+                or "Неизвестный продукт"
+            ),
+
+            "calories": number_or_none(
+                data.get("calories")
+            ),
+
+            "protein": number_or_none(
+                data.get("protein")
+            ),
+
+            "fat": number_or_none(
+                data.get("fat")
+            ),
+
+            "carbs": number_or_none(
+                data.get("carbs")
+            ),
+
+            "basis": (
+                data.get("basis")
+                or "unknown"
+            ),
+
+            "confidence": number_or_none(
+                data.get("confidence")
+            ) or 0.0,
+
+            "items": [],
+
+            "total": {}
+        }
+
+    # --------------------------------------------------------
+    # DISH
+    # --------------------------------------------------------
+
+    items = data.get(
+        "items",
+        []
+    )
+
+    if not isinstance(items, list):
+        items = []
+
+    normalized_items = []
+
+    for item in items:
+
+        if not isinstance(item, dict):
+            continue
+
+        normalized_items.append({
+            "name": (
+                item.get("name")
+                or "Неизвестный продукт"
+            ),
+
+            "estimated_grams": (
+                number_or_none(
+                    item.get(
+                        "estimated_grams"
+                    )
+                ) or 0.0
+            ),
+
+            "calories": (
+                number_or_none(
+                    item.get("calories")
+                ) or 0.0
+            ),
+
+            "protein": (
+                number_or_none(
+                    item.get("protein")
+                ) or 0.0
+            ),
+
+            "fat": (
+                number_or_none(
+                    item.get("fat")
+                ) or 0.0
+            ),
+
+            "carbs": (
+                number_or_none(
+                    item.get("carbs")
+                ) or 0.0
+            ),
+
+            "confidence": (
+                number_or_none(
+                    item.get("confidence")
+                ) or 0.0
+            )
+        })
+
+    total = data.get(
+        "total",
+        {}
+    )
+
+    if not isinstance(total, dict):
+        total = {}
+
+    total_calories = number_or_none(
+        total.get("calories")
+    )
+
+    total_protein = number_or_none(
+        total.get("protein")
+    )
+
+    total_fat = number_or_none(
+        total.get("fat")
+    )
+
+    total_carbs = number_or_none(
+        total.get("carbs")
+    )
+
+    # Если Gemini не дал total —
+    # считаем его из продуктов.
+    if total_calories is None:
+        total_calories = sum(
+            item["calories"]
+            for item in normalized_items
+        )
+
+    if total_protein is None:
+        total_protein = sum(
+            item["protein"]
+            for item in normalized_items
+        )
+
+    if total_fat is None:
+        total_fat = sum(
+            item["fat"]
+            for item in normalized_items
+        )
+
+    if total_carbs is None:
+        total_carbs = sum(
+            item["carbs"]
+            for item in normalized_items
+        )
+
+    return {
+        "type": "dish",
+
+        "name": (
+            data.get("name")
+            or "Блюдо"
+        ),
+
+        "calories": total_calories,
+
+        "protein": total_protein,
+
+        "fat": total_fat,
+
+        "carbs": total_carbs,
+
+        "basis": "dish",
+
+        "confidence": (
+            number_or_none(
+                data.get("confidence")
+            ) or 0.0
+        ),
+
+        "items": normalized_items,
+
+        "total": {
+            "calories": total_calories,
+            "protein": total_protein,
+            "fat": total_fat,
+            "carbs": total_carbs
+        }
+    }
+
+
+# ============================================================
+# MAIN ANALYSIS
 # ============================================================
 
 async def analyze_food_image(
-    image_bytes: bytes,
+    image_data: bytes,
     mime_type: str = "image/jpeg"
-):
+) -> dict:
 
-    if not image_bytes:
-
-        raise ValueError(
-            "Empty image"
-        )
-
-
-    # ========================================================
-    # DEBUG LOG
-    # ========================================================
-
-    print(
-        "=================================================="
+    logger.info("=" * 60)
+    logger.info("GEMINI FOOD ANALYSIS")
+    logger.info("Model: %s", MODEL_NAME)
+    logger.info(
+        "Image size: %s bytes",
+        len(image_data)
     )
-
-    print(
-        "GEMINI FOOD ANALYSIS"
+    logger.info(
+        "MIME type: %s",
+        mime_type
     )
-
-    print(
-        f"Model: {MODEL_NAME}"
-    )
-
-    print(
-        f"Image size: {len(image_bytes)} bytes"
-    )
-
-    print(
-        f"MIME type: {mime_type}"
-    )
-
-    print(
-        "=================================================="
-    )
-
-
-    # ========================================================
-    # SEND IMAGE
-    # ========================================================
+    logger.info("=" * 60)
 
     try:
 
         response = await client.aio.models.generate_content(
-
             model=MODEL_NAME,
 
             contents=[
                 types.Part.from_bytes(
-                    data=image_bytes,
+                    data=image_data,
                     mime_type=mime_type
                 ),
-
-                PROMPT
+                FOOD_ANALYSIS_PROMPT
             ],
 
             config=types.GenerateContentConfig(
+                temperature=0.1,
 
                 response_mime_type="application/json"
-
             )
         )
 
-
     except Exception as error:
 
-        print(
-            "=================================================="
-        )
-
-        print(
-            "GEMINI API ERROR"
-        )
-
-        print(
-            repr(error)
-        )
-
-        print(
-            "=================================================="
+        logger.exception(
+            "Gemini API error: %s",
+            error
         )
 
         raise
 
+    raw_text = response.text or ""
 
-    # ========================================================
-    # EMPTY RESPONSE
-    # ========================================================
+    logger.info(
+        "GEMINI RAW RESPONSE:\n%s",
+        raw_text
+    )
 
-    if not response.text:
+    cleaned_text = clean_json_response(
+        raw_text
+    )
 
-        raise ValueError(
-            "Gemini returned an empty response"
+    try:
+
+        parsed = json.loads(
+            cleaned_text
         )
 
+    except json.JSONDecodeError as error:
 
-    # ========================================================
-    # RAW RESPONSE
-    # ========================================================
+        logger.exception(
+            "Could not parse Gemini JSON: %s",
+            error
+        )
 
-    print(
-        "GEMINI RAW RESPONSE:"
+        logger.error(
+            "Cleaned response: %s",
+            cleaned_text
+        )
+
+        raise ValueError(
+            "Gemini returned invalid JSON"
+        ) from error
+
+    result = normalize_result(
+        parsed
     )
 
-    print(
-        response.text
-    )
-
-
-    # ========================================================
-    # PARSE JSON
-    # ========================================================
-
-    data = extract_json(
-        response.text
-    )
-
-
-    # ========================================================
-    # REQUIRED FIELDS
-    # ========================================================
-
-    required_fields = [
-        "name",
-        "calories",
-        "protein",
-        "fat",
-        "carbs",
-        "basis"
-    ]
-
-
-    for field in required_fields:
-
-        if field not in data:
-
-            raise ValueError(
-                f"Gemini response is missing: {field}"
-            )
-
-
-    # ========================================================
-    # NUMERIC VALUES
-    # ========================================================
-
-    numeric_fields = [
-        "calories",
-        "protein",
-        "fat",
-        "carbs"
-    ]
-
-
-    for field in numeric_fields:
-
-        value = data.get(field)
-
-
-        if value is None:
-
-            continue
-
-
-        try:
-
-            # Поддерживаем:
-            # 12.5
-            # "12.5"
-            # "12,5"
-
-            data[field] = float(
-                str(value).replace(
-                    ",",
-                    "."
-                )
-            )
-
-
-        except (
-            ValueError,
-            TypeError
-        ):
-
-            print(
-                f"Invalid {field} value: {value}"
-            )
-
-            data[field] = None
-
-
-    # ========================================================
-    # BASIS VALIDATION
-    # ========================================================
-
-    allowed_basis = {
-        "100g",
-        "100ml",
-        "portion",
-        "package"
-    }
-
-
-    if data.get("basis") not in allowed_basis:
-
-        data["basis"] = None
-
-
-    # ========================================================
-    # NAME VALIDATION
-    # ========================================================
-
-    if not data.get("name"):
-
-        data["name"] = "Неизвестный продукт"
-
-    else:
-
-        data["name"] = str(
-            data["name"]
-        ).strip()
-
-
-    # ========================================================
-    # FINAL RESULT
-    # ========================================================
-
-    print(
-        "GEMINI PARSED RESULT:"
-    )
-
-    print(
+    logger.info(
+        "GEMINI PARSED RESULT:\n%s",
         json.dumps(
-            data,
+            result,
             ensure_ascii=False,
             indent=2
         )
     )
 
-    print(
-        "=================================================="
-    )
-
-
-    return data
+    return result
